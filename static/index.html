@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RSI Pro Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #111827; --surface-color: #1F2937; --border-color: #374151;
+            --text-primary: #F9FAFB; --text-secondary: #9CA3AF; --accent-color: #34D399;
+            --red-color: #F87171; --yellow-color: #FBBF24;
+            --row-even-color: #2a3647;
+        }
+        *, *::before, *::after { box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background-color: var(--bg-color ); color: var(--text-primary); margin: 0; padding: 2rem; }
+        .fade-in { animation: fadeIn 0.5s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        header { text-align: center; margin-bottom: 2rem; }
+        header h1 { color: var(--text-primary); font-weight: 700; font-size: 2.25rem; }
+        header h1 span { color: var(--accent-color); }
+        
+        .stats-container { display: flex; justify-content: center; gap: 2rem; margin-bottom: 2rem; flex-wrap: wrap; }
+        .stat-box { background-color: var(--surface-color); padding: 1rem 1.5rem; border-radius: 0.75rem; text-align: center; border: 1px solid var(--border-color); transition: transform 0.2s, box-shadow 0.2s; }
+        .stat-box:hover { transform: translateY(-5px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+        .stat-box .value { font-size: 2.25em; font-weight: 700; color: var(--accent-color); }
+        .stat-box .label { font-size: 0.9em; color: var(--text-secondary); margin-top: 0.25rem; }
+        
+        .main-content { display: grid; grid-template-columns: repeat(auto-fit, minmax(550px, 1fr)); gap: 2rem; }
+        .column { background-color: var(--surface-color); border-radius: 0.75rem; padding: 1.5rem; border: 1px solid var(--border-color); }
+        .column h2 { margin-top: 0; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; }
+        
+        .loader-dot { display: none; width: 10px; height: 10px; background-color: var(--accent-color); border-radius: 50%; animation: pulse 1.5s infinite ease-in-out; }
+        @keyframes pulse { 0%, 100% { transform: scale(0.8); opacity: 0.5; } 50% { transform: scale(1.2); opacity: 1; } }
+
+        .table-container { max-height: 60vh; overflow-y: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
+        th { background-color: #2a3647; position: sticky; top: 0; z-index: 1; cursor: pointer; user-select: none; }
+        th:hover { background-color: #374151; }
+        tbody tr:nth-child(even) { background-color: var(--row-even-color); }
+
+        .sort-indicator { margin-left: 0.5rem; color: var(--accent-color); }
+        .rsi-high { color: var(--red-color); font-weight: 600; }
+        .alert-num { font-weight: 600; color: var(--yellow-color); }
+        .positive { color: var(--accent-color); }
+        .negative { color: var(--red-color); }
+        
+        /* --- NEW: Chart Button Style --- */
+        .chart-btn {
+            background-color: var(--border-color);
+            color: var(--text-primary);
+            text-decoration: none;
+            padding: 0.25rem 0.6rem;
+            border-radius: 0.25rem;
+            font-size: 0.8em;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+        .chart-btn:hover {
+            background-color: #4b5563;
+        }
+
+        .loading-screen { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(17, 24, 39, 0.9); display: flex; justify-content: center; align-items: center; z-index: 100; backdrop-filter: blur(5px); }
+        .spinner { width: 56px; height: 56px; border-radius: 50%; padding: 1.1px; background: conic-gradient(#0000 10%, var(--accent-color)) content-box; -webkit-mask: repeating-conic-gradient(#0000 0deg, #000 1deg 20deg, #0000 21deg 36deg), linear-gradient(#0000 0 0, #000 0 0); -webkit-mask-composite: destination-in; mask-composite: intersect; animation: spinner-d555b6 0.5s infinite steps(10); }
+        @keyframes spinner-d555b6 { to { transform: rotate(1turn) } }
+        
+        .db-button-container { text-align: center; margin: 2rem 0; }
+        .db-button { background-color: var(--accent-color); color: var(--bg-color); border: none; padding: 0.75rem 1.5rem; border-radius: 0.5rem; font-weight: 600; cursor: pointer; transition: background-color 0.2s; }
+        .db-button:hover { background-color: #6ee7b7; }
+        
+        .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(17, 24, 39, 0.8); display: none; justify-content: center; align-items: center; z-index: 50; backdrop-filter: blur(5px); }
+        .modal-content { background-color: var(--surface-color); padding: 2rem; border-radius: 0.75rem; width: 95%; height: 90%; display: flex; flex-direction: column; animation: fadeIn 0.3s; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem; margin-bottom: 1rem; }
+        .close-button { font-size: 2rem; color: var(--text-secondary); cursor: pointer; background: none; border: none; }
+        .price-comparison .live { color: var(--accent-color); }
+        .price-comparison .change { font-size: 0.8em; margin-left: 0.5rem; }
+    </style>
+</head>
+<body>
+
+    <div id="loading-screen" class="loading-screen">
+        <div class="spinner"></div>
+    </div>
+
+    <div id="app-content" style="display: none;" class="fade-in">
+        <header>
+            <h1><span>RSI</span> Pro Dashboard</h1>
+        </header>
+
+        <div class="stats-container">
+            <div class="stat-box">
+                <div id="rsi-over-80-count" class="value">0</div>
+                <div class="label">Coins with RSI > 80</div>
+            </div>
+            <div class="stat-box">
+                <div id="total-symbols-count" class="value">0</div>
+                <div class="label">Total Symbols Monitored</div>
+            </div>
+        </div>
+
+        <div class="db-button-container">
+            <button id="view-db-btn" class="db-button">View Alert Database</button>
+        </div>
+
+        <main class="main-content">
+            <div class="column">
+                <h2>Live RSI Rankings (1h) <span class="loader-dot" id="rsi-loader"></span></h2>
+                <div class="table-container">
+                    <table id="rsi-table">
+                        <thead>
+                            <tr>
+                                <th data-column="0">#</th>
+                                <th data-column="1">Symbol</th>
+                                <th data-column="2">RSI</th>
+                                <th data-column="3">Price</th>
+                                <th data-column="4">24h Change</th>
+                                <!-- NEW: Link Column -->
+                                <th data-column="5">Link</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="column">
+                <h2>Recent Email Alerts <span class="loader-dot" id="alert-loader"></span></h2>
+                <div class="table-container">
+                    <table id="alert-log-table">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Time</th>
+                                <th>Symbol</th>
+                                <th>Sent RSI</th>
+                                <th>Live RSI</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- (Database Viewer Modal is unchanged) -->
+    <div id="db-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Alerts Database</h2>
+                <button id="close-db-btn" class="close-button">&times;</button>
+            </div>
+            <div id="db-spinner" class="loading-screen" style="position:relative; display:none; min-height: 300px;">
+                <div class="spinner"></div>
+            </div>
+            <div id="db-table-container" class="table-container" style="flex-grow: 1;">
+                <table id="db-table">
+                    <thead></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const loadingScreen = document.getElementById('loading-screen');
+        const appContent = document.getElementById('app-content');
+        const rsiTableBody = document.querySelector('#rsi-table tbody');
+        const alertLogTableBody = document.querySelector('#alert-log-table tbody');
+        const rsiOver80Count = document.getElementById('rsi-over-80-count');
+        const totalSymbolsCount = document.getElementById('total-symbols-count');
+        const rsiLoader = document.getElementById('rsi-loader');
+        const alertLoader = document.getElementById('alert-loader');
+        const dbModal = document.getElementById('db-modal');
+        const viewDbBtn = document.getElementById('view-db-btn');
+        const closeDbBtn = document.getElementById('close-db-btn');
+        const dbTableHead = document.querySelector('#db-table thead');
+        const dbTableBody = document.querySelector('#db-table tbody');
+        const dbSpinner = document.getElementById('db-spinner');
+
+        const sortStates = {};
+
+        function sortTable(tableId, columnIndex) {
+            const table = document.getElementById(tableId);
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            
+            const sortKey = `${tableId}-${columnIndex}`;
+            const currentDirection = sortStates[sortKey] === 'asc' ? 'desc' : 'asc';
+            Object.keys(sortStates).forEach(key => {
+                if (key.startsWith(tableId)) delete sortStates[key];
+            });
+            sortStates[sortKey] = currentDirection;
+
+            table.querySelectorAll('th .sort-indicator').forEach(span => span.remove());
+            
+            const header = table.querySelector(`th[data-column="${columnIndex}"]`);
+            // Don't add sort indicator to the link column
+            if (header && header.textContent !== 'Link') {
+                let indicator = document.createElement('span');
+                indicator.className = 'sort-indicator';
+                indicator.textContent = currentDirection === 'asc' ? ' ▲' : ' ▼';
+                header.appendChild(indicator);
+            }
+
+            const sortedRows = rows.sort((a, b) => {
+                // Don't sort the link column
+                if (columnIndex === 5) return 0;
+
+                const aText = a.cells[columnIndex].textContent.trim();
+                const bText = b.cells[columnIndex].textContent.trim();
+                const aNum = parseFloat(aText.replace(/[^0-9.-]+/g,""));
+                const bNum = parseFloat(bText.replace(/[^0-9.-]+/g,""));
+                let valA, valB;
+                if (!isNaN(aNum) && !isNaN(bNum)) { valA = aNum; valB = bNum; } 
+                else { valA = aText.toUpperCase(); valB = bText.toUpperCase(); }
+                if (valA < valB) return currentDirection === 'asc' ? -1 : 1;
+                if (valA > valB) return currentDirection === 'asc' ? 1 : -1;
+                return 0;
+            });
+
+            tbody.innerHTML = '';
+            sortedRows.forEach(row => tbody.appendChild(row));
+        }
+
+        // --- UPDATED: Main Data Fetch to include the chart button ---
+        async function fetchData() {
+            rsiLoader.style.display = 'inline-block';
+            alertLoader.style.display = 'inline-block';
+
+            try {
+                const response = await fetch('/data');
+                const data = await response.json();
+
+                if (data.init_progress < 100) {
+                    return;
+                } else if (loadingScreen.style.display !== 'none') {
+                    loadingScreen.style.display = 'none';
+                    appContent.style.display = 'block';
+                }
+
+                let rsiHtml = '';
+                data.market_data.forEach((item, index) => {
+                    const rsiClass = item.rsi > 70 ? 'rsi-high' : '';
+                    const changeClass = item.change_24h >= 0 ? 'positive' : 'negative';
+                    
+                    let priceText = '...';
+                    let changeText = '...';
+                    if (item.rsi >= 65) {
+                        priceText = item.price ? `$${item.price.toFixed(4)}` : '...';
+                        changeText = item.change_24h ? `<span class="${changeClass}">${item.change_24h.toFixed(2)}%</span>` : '...';
+                    }
+
+                    // NEW: Chart button cell
+                    const chartButton = `<td><a href="https://www.binance.com/en/futures/${item.symbol}" target="_blank" rel="noopener noreferrer" class="chart-btn">Chart &gt;</a></td>`;
+
+                    rsiHtml += `<tr>
+                        <td>${index + 1}</td>
+                        <td>${item.symbol}</td>
+                        <td class="${rsiClass}">${item.rsi.toFixed(2 )}</td>
+                        <td>${priceText}</td>
+                        <td>${changeText}</td>
+                        ${chartButton}
+                    </tr>`;
+                });
+                rsiTableBody.innerHTML = rsiHtml;
+                
+                const rsiSortKey = Object.keys(sortStates).find(k => k.startsWith('rsi-table'));
+                if (rsiSortKey) {
+                    const colIndex = rsiSortKey.split('-')[1];
+                    delete sortStates[rsiSortKey];
+                    sortTable('rsi-table', colIndex);
+                }
+
+                let alertHtml = '';
+                data.alert_log.forEach(alert => {
+                    const liveRsiClass = alert.live_rsi > 70 ? 'rsi-high' : '';
+                    alertHtml += `<tr>
+                        <td class="alert-num">#${alert.alert_num}</td>
+                        <td>${alert.time}</td>
+                        <td>${alert.symbol}</td>
+                        <td>${alert.sent_rsi.toFixed(2)}</td>
+                        <td class="${liveRsiClass}">${typeof alert.live_rsi === 'number' ? alert.live_rsi.toFixed(2) : 'N/A'}</td>
+                    </tr>`;
+                });
+                alertLogTableBody.innerHTML = alertHtml;
+
+                rsiOver80Count.textContent = data.rsi_over_80_count;
+                totalSymbolsCount.textContent = data.total_symbols || (data.market_data ? data.market_data.length : 0);
+
+            } catch (error) {
+                console.error("Fetch error:", error);
+            } finally {
+                rsiLoader.style.display = 'none';
+                alertLoader.style.display = 'none';
+            }
+        }
+
+        // (Database Modal Logic is unchanged)
+        async function fetchDatabase() {
+            dbSpinner.style.display = 'flex';
+            dbTableBody.innerHTML = '';
+            dbTableHead.innerHTML = '';
+            try {
+                const response = await fetch('/database');
+                const data = await response.json();
+                if (data.error || data.length === 0) {
+                    dbTableBody.innerHTML = `<tr><td colspan="9" style="text-align:center;">No alerts in the database yet.</td></tr>`;
+                    dbSpinner.style.display = 'none';
+                    return;
+                }
+                const headers = Object.keys(data[0]);
+                let headerHtml = '<tr>';
+                headers.forEach((header, index) => {
+                    if (header !== 'live_price') {
+                         headerHtml += `<th data-column="${index}">${header}</th>`;
+                    }
+                });
+                headerHtml += '</tr>';
+                dbTableHead.innerHTML = headerHtml;
+                let bodyHtml = '';
+                data.forEach(record => {
+                    bodyHtml += '<tr>';
+                    headers.forEach(header => {
+                        if (header === 'live_price') return;
+                        let value = record[header];
+                        let cellHtml = '';
+                        if (header === 'Price' && record.live_price) {
+                            const alertPrice = parseFloat(String(value).replace(/[^0-9.-]+/g,""));
+                            const livePrice = parseFloat(record.live_price);
+                            const change = ((livePrice - alertPrice) / alertPrice) * 100;
+                            const changeClass = change >= 0 ? 'positive' : 'negative';
+                            cellHtml = `<div class="price-comparison"><span>$${alertPrice.toFixed(4)} / </span><span class="live">$${livePrice.toFixed(4)}</span><span class="change ${changeClass}">(${change.toFixed(2)}%)</span></div>`;
+                        } else { cellHtml = value; }
+                        bodyHtml += `<td>${cellHtml}</td>`;
+                    });
+                    bodyHtml += '</tr>';
+                });
+                dbTableBody.innerHTML = bodyHtml;
+                document.querySelectorAll('#db-table th').forEach(th => {
+                    th.addEventListener('click', () => sortTable('db-table', th.dataset.column));
+                });
+            } catch (error) {
+                console.error("Database fetch error:", error);
+                dbTableBody.innerHTML = `<tr><td colspan="9" style="text-align:center;">Error loading database.</td></tr>`;
+            } finally {
+                dbSpinner.style.display = 'none';
+            }
+        }
+
+        // (Event Listeners are unchanged)
+        viewDbBtn.addEventListener('click', () => {
+            dbModal.style.display = 'flex';
+            fetchDatabase();
+        });
+        closeDbBtn.addEventListener('click', () => { dbModal.style.display = 'none'; });
+        dbModal.addEventListener('click', (e) => {
+            if (e.target === dbModal) { dbModal.style.display = 'none'; }
+        });
+        document.querySelectorAll('#rsi-table th').forEach(th => {
+            th.addEventListener('click', () => sortTable('rsi-table', th.dataset.column));
+        });
+
+        setInterval(fetchData, 10000);
+        fetchData();
+    </script>
+</body>
+</html>
