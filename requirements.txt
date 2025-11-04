@@ -1,0 +1,6 @@
+flask
+pandas
+pandas-ta
+openpyxl
+aiohttp
+numpy

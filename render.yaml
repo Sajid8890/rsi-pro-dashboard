@@ -1,0 +1,14 @@
+services:
+  # The Flask Web Server for the Dashboard
+  - type: web
+    name: rsi-dashboard
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python app.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0 # Use a specific Python version
+
+  # This is a placeholder for a potential future background worker
+  # For now, our single web service runs everything, which is fine for the free tier.
