@@ -290,10 +290,8 @@ def get_database():
 def run_asyncio_loop():
     asyncio.run(binance_websocket_listener())
 
-if __name__ == "__main__":
-    binance_thread = Thread(target=run_asyncio_loop, daemon=True)
-    binance_thread.start()
-    # --- MODIFICATION FOR RENDER ---
-    # Render provides the PORT environment variable
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+# Add this line at the top
+from threading import Thread
+# Start the background thread for the Binance listener
+binance_thread = Thread(target=run_asyncio_loop, daemon=True)
+binance_thread.start()
