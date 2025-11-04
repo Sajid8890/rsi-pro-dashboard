@@ -1,4 +1,4 @@
-# ... (All imports and configuration are the same) ...
+# ... (All imports are the same) ...
 import asyncio, json, pandas as pd, numpy as np, smtplib, aiohttp, time, os, random
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -17,7 +17,8 @@ RSI_THRESHOLD = 80
 TIMEFRAME = '1h'
 CALIBRATION_OFFSET = 3
 COOLDOWN_PERIOD = 2 * 60 * 60
-DATA_CACHE_FILE = 'initial_data.json'
+# We no longer need a cache file
+# DATA_CACHE_FILE = 'initial_data.json' 
 ALERT_COUNTER_FILE = 'alert_counter.json'
 DATABASE_FILE = 'alerts_database.xlsx'
 SMTP_SERVER = "smtp.gmail.com"
@@ -28,52 +29,52 @@ EMAIL_RECEIVER = os.environ.get('EMAIL_RECEIVER')
 
 app_state = {
     "market_data": {}, "alert_log": [], "alerted_coins": {}, 
-    "init_progress": 0, "total_symbols": 0, "rsi_over_80_count": 0,
-    "is_ready": False
+    "total_symbols": 0, "rsi_over_80_count": 0,
+    "is_ready": True # The bot is now "ready" instantly, as there's no warmup
 }
 db_lock = Lock()
 
-# --- (IndicatorCalculator and helper functions are UNCHANGED) ---
+# --- NEW: "Lean" IndicatorCalculator ---
 class IndicatorCalculator:
     def __init__(self, symbol, rsi_period=14, ema_period=20):
-        self.symbol = symbol; self.rsi_period = rsi_period; self.ema_period = ema_period
-        self.df = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+        self.symbol = symbol
+        self.rsi_period = rsi_period
+        self.ema_period = ema_period
+        # Start with an empty dataframe. We will build it as candles close.
+        self.df = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         self.last_indicators = {}
-    def initialize_with_data(self, klines):
-        if not isinstance(klines, list) or not all(isinstance(row, list) for row in klines): return False
-        self.df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'], dtype=float)
-        self._perform_calculation(); return True
-    async def initialize_from_api(self):
-        # Add retry logic here for robustness
-        for attempt in range(3): # Try up to 3 times
-            try:
-                url = f"https://fapi.binance.com/fapi/v1/klines?symbol={self.symbol}&interval={TIMEFRAME}&limit=500"
-                async with aiohttp.ClientSession( ) as session:
-                    async with session.get(url, timeout=10) as response:
-                        if response.status == 200:
-                            klines = await response.json()
-                            self.df = pd.DataFrame(klines[:-1], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'], dtype=float)
-                            self._perform_calculation()
-                            return klines[:-1]
-                        else:
-                            print(f"  -> Failed for {self.symbol} with status {response.status}. Retrying...")
-            except Exception as e:
-                print(f"  -> Exception for {self.symbol}: {e}. Retrying...")
-            await asyncio.sleep(2) # Wait 2 seconds before retrying
-        print(f"  -> !!! FAILED to fetch {self.symbol} after 3 attempts.")
-        return None
+
+    # REMOVED: initialize_with_data and initialize_from_api are gone.
+
     def calculate_live_indicators(self, live_price):
-        if self.df.empty: return
-        live_df = self.df.copy(); live_df.loc[live_df.index[-1], 'close'] = live_price
+        # Only calculate if we have enough historical data
+        if len(self.df) < self.rsi_period:
+            # Not enough data yet, just store the price
+            app_state["market_data"][self.symbol] = {'price': live_price, 'rsi': None, 'change_24h': None}
+            return
+
+        live_df = self.df.copy()
+        live_df.loc[live_df.index[-1], 'close'] = live_price
         self._perform_calculation(df=live_df)
+
     def add_closed_candle(self, kline_data):
-        new_row = pd.DataFrame([kline_data], columns=self.df.columns, dtype=float)
+        new_row = pd.DataFrame([kline_data], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'], dtype=float)
         self.df = pd.concat([self.df, new_row], ignore_index=True)
-        if len(self.df) > 500: self.df = self.df.iloc[1:]
-        return self._perform_calculation()
+        
+        # Keep the dataframe from growing too large
+        if len(self.df) > 100: # We only need a few dozen for calculations
+            self.df = self.df.iloc[-100:]
+        
+        # Only perform calculation if we have enough data
+        if len(self.df) >= self.rsi_period:
+            return self._perform_calculation()
+        return None
+
     def _perform_calculation(self, df=None):
         target_df = df if df is not None else self.df
         if len(target_df) < self.rsi_period: return None
+
+        # This part remains the same
         rsi = ta.rsi(close=target_df['close'], length=self.rsi_period)
         macd = ta.macd(close=target_df['close'])
         ema = ta.ema(close=target_df['close'], length=self.ema_period)
@@ -92,6 +93,8 @@ class IndicatorCalculator:
         }
         app_state["market_data"][self.symbol] = self.last_indicators
         return self.last_indicators
+
+# --- (All helper functions like write_to_database, send_email_alert, etc. are UNCHANGED) ---
 def write_to_database(alert_data):
     with db_lock:
         try:
@@ -151,12 +154,11 @@ async def get_all_futures_pairs():
                 return [s['symbol'] for s in data['symbols'] if s['quoteAsset'] == 'USDT' and s['contractType'] == 'PERPETUAL' and s['status'] == 'TRADING']
     except Exception: return []
 def update_rsi_over_80_count():
-    app_state["rsi_over_80_count"] = sum(1 for data in app_state["market_data"].values() if data.get('rsi', 0) > RSI_THRESHOLD)
+    app_state["rsi_over_80_count"] = sum(1 for data in app_state["market_data"].values() if data.get('rsi') and data.get('rsi', 0) > RSI_THRESHOLD)
 
-# --- NEW: The "Bulletproof" binance_websocket_listener ---
+# --- NEW: "Lean" binance_websocket_listener ---
 async def binance_websocket_listener():
-    print("--- Starting Binance Listener Thread ---")
-    app_state["is_ready"] = False
+    print("--- Starting Lean Binance Listener ---")
     
     symbols = await get_all_futures_pairs()
     if not symbols: print("Could not fetch symbol list. Exiting."); return
@@ -164,34 +166,12 @@ async def binance_websocket_listener():
     app_state["total_symbols"] = len(symbols)
     calculators = {symbol: IndicatorCalculator(symbol) for symbol in symbols}
     
-    print("--- Starting BULLETPROOF Initial Data Fetch ---")
-    new_cache = {}
-    # Using a simple, synchronous for-loop for guaranteed completion
-    for i, symbol in enumerate(symbols):
-        print(f"Fetching {symbol} ({i+1}/{len(symbols)})...")
-        historical_data = await calculators[symbol].initialize_from_api()
-        if historical_data:
-            new_cache[symbol] = historical_data
-        
-        # Update progress for the UI
-        app_state["init_progress"] = int(((i + 1) / len(symbols)) * 100)
-        # We add a tiny sleep to prevent overwhelming the event loop,
-        # ensuring the UI progress updates can be served.
-        await asyncio.sleep(0.01)
-
-    print("Saving new data to cache file...");
-    with open(DATA_CACHE_FILE, 'w') as f: json.dump(new_cache, f)
-    app_state["init_progress"] = 100
-
-    print("\n--- Initial checks complete. Connecting to WebSockets. ---")
-    for symbol, calc in calculators.items():
-        if calc.last_indicators: check_rsi_and_alert(symbol, calc.last_indicators)
-    
+    # No more warmup. We are instantly ready.
     app_state["is_ready"] = True
-    print("--- BOT IS NOW READY AND SERVING FULL DATA ---")
+    print(f"--- Bot is live and monitoring {len(symbols)} symbols. RSI will populate over time. ---")
 
-    # ... (The rest of the listener functions are UNCHANGED)
     async def listen_for_closed_candles():
+        # This function is now the PRIMARY way data is collected
         streams = [f"{s.lower()}@kline_{TIMEFRAME}" for s in symbols]
         chunk_size = 100
         async def listen_chunk(stream_chunk):
@@ -206,45 +186,39 @@ async def binance_websocket_listener():
                                 if 'k' in data['data'] and data['data']['k']['x']:
                                     kline = data['data']['k']; symbol = kline['s']; calc = calculators.get(symbol)
                                     if calc:
+                                        # Add the new candle data. This will build up our history.
                                         kline_data_for_df = [kline['t'], kline['o'], kline['h'], kline['l'], kline['c'], kline['v'], kline['T'], kline['q'], kline['n'], kline['V'], kline['Q'], kline['B']]
                                         indicators = calc.add_closed_candle(kline_data_for_df)
-                                        check_rsi_and_alert(symbol, indicators)
+                                        # If we have enough data to calculate, check for an alert
+                                        if indicators:
+                                            check_rsi_and_alert(symbol, indicators)
                 except (aiohttp.ClientError, asyncio.TimeoutError, Exception ) as e:
-                    print(f"1h Listener Error: {e}. Reconnecting in 10-15 seconds...")
+                    print(f"1h Listener Error: {e}. Reconnecting...")
                     await asyncio.sleep(10 + random.uniform(0, 5))
         tasks = [listen_chunk(streams[i:i + chunk_size]) for i in range(0, len(streams), chunk_size)]
         await asyncio.gather(*tasks)
-    async def listen_for_top_n_tickers():
-        current_subscriptions = set()
+
+    async def listen_for_live_ticks():
+        # This function now ONLY updates the live price for coins that already have an RSI
+        websocket_url = "wss://fstream.binance.com/ws/!ticker@arr"
         while True:
             try:
-                sorted_by_rsi = sorted([s for s in app_state["market_data"].items() if s[1].get('rsi')], key=lambda item: item[1]['rsi'], reverse=True)
-                top_n_symbols = {s[0] for s in sorted_by_rsi[:TOP_N_COINS]}
-                if top_n_symbols != current_subscriptions:
-                    print(f"[Ticker Manager] Updating subscriptions. New Top {TOP_N_COINS}: {len(top_n_symbols)} coins.")
-                    current_subscriptions = top_n_symbols
-                if not current_subscriptions:
-                    await asyncio.sleep(5); continue
-                streams = [f"{s.lower()}@ticker" for s in current_subscriptions]
-                websocket_url = f"wss://fstream.binance.com/stream?streams={'/'.join(streams)}"
                 async with aiohttp.ClientSession( ) as session:
                     async with session.ws_connect(websocket_url) as ws:
-                        while True:
-                            try:
-                                msg = await asyncio.wait_for(ws.receive(), timeout=30.0)
-                                if msg.type == aiohttp.WSMsgType.TEXT:
-                                    data = json.loads(msg.data )['data']
-                                    symbol = data['s']; calc = calculators.get(symbol)
-                                    if calc: calc.calculate_live_indicators(float(data['c']))
-                                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR ):
-                                    print("Dynamic Ticker connection closed/errored. Breaking to reconnect."); break
-                            except asyncio.TimeoutError:
-                                print("[Ticker Manager] 30s timeout reached. Re-evaluating Top 20 coins."); break
-                update_rsi_over_80_count()
+                        print("Live Price Ticker connected.")
+                        async for msg in ws:
+                            tickers = json.loads(msg.data)
+                            for ticker in tickers:
+                                symbol = ticker['s']; calc = calculators.get(symbol)
+                                # Only run live calculation if we have enough data
+                                if calc and len(calc.df) >= calc.rsi_period:
+                                    calc.calculate_live_indicators(float(ticker['c']))
+                            update_rsi_over_80_count()
             except (aiohttp.ClientError, asyncio.TimeoutError, Exception ) as e:
-                print(f"Dynamic Ticker Main Loop Error: {e}. Reconnecting in 10-15 seconds...")
+                print(f"Ticker Listener Error: {e}. Reconnecting...")
                 await asyncio.sleep(10 + random.uniform(0, 5))
-    await asyncio.gather(listen_for_closed_candles(), listen_for_top_n_tickers())
+
+    await asyncio.gather(listen_for_closed_candles(), listen_for_live_ticks())
 
 # --- (Flask server part is UNCHANGED) ---
 app = Flask(__name__)
@@ -252,20 +226,24 @@ app = Flask(__name__)
 def index(): return app.send_static_file('index.html')
 @app.route('/data')
 def get_data():
-    if not app_state.get("is_ready"):
-        return jsonify({"status": "initializing", "init_progress": app_state["init_progress"]})
+    # The UI will now handle cases where RSI is None
     market_list = []
     for symbol, data in app_state["market_data"].items():
-        if data and 'rsi' in data: market_list.append({'symbol': symbol, **data})
-    sorted_market_data = sorted(market_list, key=lambda x: x.get('rsi', 0), reverse=True)
+        if data: market_list.append({'symbol': symbol, **data})
+    
+    sorted_market_data = sorted(market_list, key=lambda x: x.get('rsi') or -1, reverse=True)
+    
     enriched_alert_log = []
     for alert in app_state["alert_log"]:
         symbol = alert['symbol']; current_data = app_state["market_data"].get(symbol)
         current_rsi = current_data.get('rsi') if current_data else 'N/A'
         enriched_alert_log.append({'alert_num': alert.get('alert_num', '-'), 'time': alert['time'], 'symbol': symbol, 'sent_rsi': alert['rsi'], 'live_rsi': current_rsi})
+        
     return jsonify({
-        "status": "ready", "market_data": sorted_market_data,
-        "alert_log": enriched_alert_log, "total_symbols": app_state["total_symbols"],
+        "status": "ready", # We are always ready now
+        "market_data": sorted_market_data,
+        "alert_log": enriched_alert_log,
+        "total_symbols": app_state["total_symbols"],
         "rsi_over_80_count": app_state["rsi_over_80_count"]
     })
 @app.route('/database')
