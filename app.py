@@ -1,4 +1,4 @@
-# ... (All imports and configuration are the same) ...
+# ... (All imports are the same) ...
 import asyncio, json, pandas as pd, numpy as np, smtplib, aiohttp, time, os, random
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -7,7 +7,7 @@ from threading import Thread, Lock
 from datetime import datetime
 import pandas_ta as ta
 from openpyxl import Workbook, load_workbook
-import gunicorn # Keep this import
+import gunicorn
 
 # --- (Configuration is the same ) ---
 TOP_N_COINS = 20
@@ -25,7 +25,13 @@ SMTP_PORT = 587
 EMAIL_SENDER = os.environ.get('EMAIL_SENDER')
 EMAIL_PASSWORD = os.environ.get('EMAIL_PASSWORD')
 EMAIL_RECEIVER = os.environ.get('EMAIL_RECEIVER')
-app_state = {"market_data": {}, "alert_log": [], "alerted_coins": {}, "init_progress": 0, "total_symbols": 0, "rsi_over_80_count": 0}
+
+# --- NEW: is_ready flag added ---
+app_state = {
+    "market_data": {}, "alert_log": [], "alerted_coins": {}, 
+    "init_progress": 0, "total_symbols": 0, "rsi_over_80_count": 0,
+    "is_ready": False # Start in a "not ready" state
+}
 db_lock = Lock()
 
 # --- (IndicatorCalculator and helper functions are UNCHANGED) ---
@@ -79,8 +85,6 @@ class IndicatorCalculator:
         }
         app_state["market_data"][self.symbol] = self.last_indicators
         return self.last_indicators
-
-# --- (All helper functions like write_to_database, send_email_alert, etc. are UNCHANGED) ---
 def write_to_database(alert_data):
     with db_lock:
         try:
@@ -143,7 +147,9 @@ def update_rsi_over_80_count():
     app_state["rsi_over_80_count"] = sum(1 for data in app_state["market_data"].values() if data.get('rsi', 0) > RSI_THRESHOLD)
 
 async def binance_websocket_listener():
-    print("Starting Binance listener...")
+    print("--- Starting Binance Listener Thread ---")
+    app_state["is_ready"] = False # Ensure we start in a not-ready state
+    
     symbols = await get_all_futures_pairs()
     if not symbols: print("Could not fetch symbol list. Exiting."); return
     app_state["total_symbols"] = len(symbols)
@@ -160,9 +166,7 @@ async def binance_websocket_listener():
     
     if not cache_is_valid:
         app_state["init_progress"] = 0; print("Fetching initial data from API...")
-        new_cache = {}
-        # --- FIX #1: Limit simultaneous requests ---
-        sem = asyncio.Semaphore(10) # Only allow 10 requests at a time
+        new_cache = {}; sem = asyncio.Semaphore(10)
         async def fetch_and_init(symbol):
             async with sem:
                 historical_data = await calculators[symbol].initialize_from_api()
@@ -179,8 +183,12 @@ async def binance_websocket_listener():
     for symbol, calc in calculators.items():
         if calc.last_indicators: check_rsi_and_alert(symbol, calc.last_indicators)
     
+    # --- SET THE READY FLAG ---
+    app_state["is_ready"] = True
+    print("--- BOT IS NOW READY AND SERVING FULL DATA ---")
+
     async def listen_for_closed_candles():
-        # ... (This function is unchanged and correct)
+        # ... (This function is unchanged)
         streams = [f"{s.lower()}@kline_{TIMEFRAME}" for s in symbols]
         chunk_size = 100
         async def listen_chunk(stream_chunk):
@@ -205,7 +213,7 @@ async def binance_websocket_listener():
         await asyncio.gather(*tasks)
 
     async def listen_for_top_n_tickers():
-        # ... (This function is mostly the same, but with the timeout fix)
+        # ... (This function is unchanged)
         current_subscriptions = set()
         while True:
             try:
@@ -222,8 +230,7 @@ async def binance_websocket_listener():
                     async with session.ws_connect(websocket_url) as ws:
                         while True:
                             try:
-                                # --- FIX #2: Increase the timeout ---
-                                msg = await asyncio.wait_for(ws.receive(), timeout=30.0) # Increased to 30 seconds
+                                msg = await asyncio.wait_for(ws.receive(), timeout=30.0)
                                 if msg.type == aiohttp.WSMsgType.TEXT:
                                     data = json.loads(msg.data )['data']
                                     symbol = data['s']; calc = calculators.get(symbol)
@@ -239,24 +246,44 @@ async def binance_websocket_listener():
 
     await asyncio.gather(listen_for_closed_candles(), listen_for_top_n_tickers())
 
-# --- (Flask server part is UNCHANGED) ---
 app = Flask(__name__)
-# ... (all the @app.route functions are the same)
+
 @app.route('/')
 def index(): return app.send_static_file('index.html')
+
+# --- UPGRADED /data endpoint ---
 @app.route('/data')
 def get_data():
+    # First, check if the bot is ready
+    if not app_state.get("is_ready"):
+        # If not ready, send a specific status
+        return jsonify({
+            "status": "initializing", 
+            "init_progress": app_state["init_progress"]
+        })
+
+    # If ready, proceed as normal
     market_list = []
     for symbol, data in app_state["market_data"].items():
         if data and 'rsi' in data: market_list.append({'symbol': symbol, **data})
+    
     sorted_market_data = sorted(market_list, key=lambda x: x.get('rsi', 0), reverse=True)
+    
     enriched_alert_log = []
     for alert in app_state["alert_log"]:
         symbol = alert['symbol']; current_data = app_state["market_data"].get(symbol)
         current_rsi = current_data.get('rsi') if current_data else 'N/A'
         enriched_alert_log.append({'alert_num': alert.get('alert_num', '-'), 'time': alert['time'], 'symbol': symbol, 'sent_rsi': alert['rsi'], 'live_rsi': current_rsi})
-    response_data = {"market_data": sorted_market_data, "alert_log": enriched_alert_log, "init_progress": app_state["init_progress"], "rsi_over_80_count": app_state["rsi_over_80_count"]}
-    return jsonify(response_data)
+        
+    return jsonify({
+        "status": "ready",
+        "market_data": sorted_market_data,
+        "alert_log": enriched_alert_log,
+        "total_symbols": app_state["total_symbols"],
+        "rsi_over_80_count": app_state["rsi_over_80_count"]
+    })
+
+# --- (get_database endpoint is unchanged) ---
 @app.route('/database')
 def get_database():
     db_data = []
@@ -264,7 +291,7 @@ def get_database():
         with db_lock:
             try:
                 df = pd.read_excel(DATABASE_FILE)
-                db_data = df.to_dict('records')
+                db__data = df.to_dict('records')
             except Exception as e:
                 print(f"Error reading database file: {e}")
                 return jsonify({"error": "Could not read database file."}), 500
